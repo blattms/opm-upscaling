@@ -392,6 +392,7 @@ class ElasticityUpscale
 
     //! \brief Linear solver
     Dune::InverseOperator<Vector, Vector>* solver;
+    std::vector<Dune::InverseOperator<Vector, Vector>*> tsolver;
 
     //! \brief The smoother used in the AMG
     typedef Dune::SeqSSOR<Matrix, Vector, Vector> Smoother;
@@ -431,6 +432,7 @@ class ElasticityUpscale
 
     //! \brief Preconditioner for the Mortar system
     MortarSchurPre<ElasticityAMG>* mpre;
+    std::vector<MortarSchurPre<ElasticityAMG>*> tmpre;
 
     //! \brief Evaluator for the Mortar system
     MortarEvaluator* meval;

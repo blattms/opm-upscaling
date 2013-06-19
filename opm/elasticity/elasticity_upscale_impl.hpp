@@ -829,6 +829,8 @@ void ElasticityUpscale<GridType>::periodicBCsMortar(const double* min,
   slave.clear();
 }
 
+#include <omp.h>
+
   template<class GridType>
 void ElasticityUpscale<GridType>::setupAMG(int pre, int post,
                                            int target, int zcells)
@@ -870,26 +872,26 @@ void ElasticityUpscale<GridType>::setupSolvers(const LinSolParams& params)
 
       // schur system: B'*diag(A)^-1*B
       if (params.mortarpre == SCHURAMG) {
-        Vector v, v2, v3;
-        v.resize(B.N());
-        v2.resize(B.N());
-        v = 0;
-        v2 = 0;
         Dune::DynamicMatrix<double> T(B.M(), B.M());
-        upre->pre(v, v);
         std::cout << "\tBuilding preconditioner for multipliers..." << std::endl;
-        MortarBlockEvaluator<Dune::Preconditioner<Vector,Vector> > pre(*upre, B);
         LoggerHelper help(B.M(), 10, 100);
+
+//#pragma omp parallel for schedule(static)
         for (size_t i=0; i < B.M(); ++i) {
+          Vector v, v2;
+          v.resize(B.N());
+          v2.resize(B.N());
+          v = 0;
+          v2 = 0;
+          ElasticityAMG amg(*upre);
+          MortarBlockEvaluator<Dune::Preconditioner<Vector,Vector> > pre(amg, B);
           v[i] = 1;
           pre.apply(v, v2);
           for (size_t j=0; j < B.M(); ++j)
             T[j][i] = v2[j];
 
-          v[i] = 0;
           help.log(i, "\t\t... still processing ... multiplier ");
         }
-        upre->post(v);
         P = MatrixOps::fromDense(T);
       } else if (params.mortarpre == SCHURDIAG) {
         Matrix D = MatrixOps::diagonal(A.getEqns());
@@ -926,12 +928,21 @@ void ElasticityUpscale<GridType>::setupSolvers(const LinSolParams& params)
         solver = new UzawaSolver<Vector, Vector>(innersolver, outersolver, B);
       } else {
         mpre = new MortarSchurPre<ElasticityAMG>(P, B, *upre, params.symmetric);
+        for (int i=0;i<omp_get_max_threads();++i) {
+          ElasticityAMG* amg = new ElasticityAMG(*upre);
+          tmpre.push_back(new MortarSchurPre<ElasticityAMG>(P, B, *amg, params.symmetric));
+        }
         meval = new MortarEvaluator(A.getOperator(), B);
         if (params.symmetric) {
           solver = new Dune::MINRESSolver<Vector>(*meval, *mpre, 
                                                   params.tol, 
                                                   params.maxit,
                                                   verbose?2:0);
+          for (int i=0;i<omp_get_max_threads();++i)
+           tsolver.push_back(new Dune::MINRESSolver<Vector>(*meval, *tmpre[i], 
+                                                            params.tol, 
+                                                            params.maxit,
+                                                            verbose?2:0));
         } else {
           solver = new Dune::RestartedGMResSolver<Vector>(*meval, *mpre, 
                                                           params.tol,
@@ -969,7 +980,7 @@ void ElasticityUpscale<GridType>::solve(int loadcase)
     u[loadcase].resize(b[loadcase].size(), false);
     u[loadcase] = 0;
 
-    solver->apply(u[loadcase], b[loadcase], r);
+    tsolver[omp_get_thread_num()]->apply(u[loadcase], b[loadcase], r);
 
     std::cout << "\tsolution norm: " << u[loadcase].two_norm() << std::endl;
   } catch (Dune::ISTLError& e) {
